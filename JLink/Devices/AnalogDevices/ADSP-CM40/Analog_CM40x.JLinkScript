@@ -1,0 +1,581 @@
+/*********************************************************************
+*            (c) 2018 - 2018 SEGGER Microcontroller GmbH             *
+*                        The Embedded Experts                        *
+*                           www.segger.com                           *
+**********************************************************************
+
+-------------------------- END-OF-HEADER -----------------------------
+
+File    : Analog_CM40x.JLinkScript
+Purpose : Contains device specific handling for Analog Devices CM40x series series
+Literature:
+  [1]  J-Link User Guide
+
+Additional information:
+  For more information about public functions that can be implemented in order to customize J-Link actions, please refer to [1]
+*/
+
+/*********************************************************************
+*
+*       Constants (similar to defines)
+*
+**********************************************************************
+*/
+
+__constant U32 _INST_TAPC_IDCODE  = 0x2;
+__constant U32 _INST_TAPC_SDBKEY  = 0xA;
+__constant U32 _INST_TAPC_JTAGCTL = 0x5;
+
+__constant U32 _INST_DAP_IDCODE   = 0xE;
+
+__constant U32 _IDCODE_TAPC       = 0x028000CB;
+__constant U32 _IDCODE_DAP        = 0x0B000477;
+
+__constant U32 _KEY128_SDBKEY0    = 0xA4B8E4A5;
+__constant U32 _KEY128_SDBKEY1    = 0xD2041DD7;
+__constant U32 _KEY128_SDBKEY2    = 0x18839DF8;
+__constant U32 _KEY128_SDBKEY3    = 0x8392C1FE;
+
+__constant U32 _SDBGKEYCOMP0      = 0x40017050;
+__constant U32 _SDBGKEYCOMP1      = 0x40017054;
+__constant U32 _SDBGKEYCOMP2      = 0x40017058;
+__constant U32 _SDBGKEYCOMP3      = 0x4001705C;
+
+__constant U32 _DAP_ACC_32BIT_AUTO_INC        = (1 << 29) | (1 << 25) | (1 << 24) | (1 << 4) | (2 << 0);  // HMASTER = DEBUG, Private access, Auto-increment, Access size: word;
+__constant U32 _DAP_ACC_32BIT_NO_AUTO_INC     = (1 << 29) | (1 << 25) | (1 << 24) | (0 << 4) | (2 << 0);  // HMASTER = DEBUG, Private access, no Auto-increment, Access size: word;
+__constant U32 _DP_CTRL_STAT_BIT_DBGPWRUPREQ  = (1 << 30);
+__constant U32 _DP_CTRL_STAT_BIT_SYSPWRUPREQ  = (1 << 28);
+__constant U32 _DP_CTRL_STAT_BIT_STICKYERR    = (1 <<  5);
+
+__constant U32 _AIRCR_ADDR                    = 0xE000ED0C;
+__constant U32 _DHCSR_ADDR                    = 0xE000EDF0;
+__constant U32 _DCRSR_ADDR                    = 0xE000EDF4;
+__constant U32 _DCRDR_ADDR                    = 0xE000EDF8;
+__constant U32 _DEMCR_ADDR                    = 0xE000EDFC;
+__constant U32 _DWT_CTRL                      = 0xE0001000;
+__constant U32 _FP_CTRL_ADDR                  = 0xE0002000;
+__constant U32 _FPCR_ADDR                     = 0xE0002008;        // Flash patch compare registers
+__constant U32 _DWT_COMP0_ADDR                = 0xE0001020;
+__constant U32 _DWT_MASK0_ADDR                = 0xE0001024;
+__constant U32 _DWT_FUNC0_ADDR                = 0xE0001028;
+__constant U32 _DWT_COMP1_ADDR                = 0xE0001030;
+__constant U32 _DWT_MASK1_ADDR                = 0xE0001034;
+__constant U32 _DWT_FUNC1_ADDR                = 0xE0001038;
+__constant U32 _DWT_COMP2_ADDR                = 0xE0001040;
+__constant U32 _DWT_MASK2_ADDR                = 0xE0001044;
+__constant U32 _DWT_FUNC2_ADDR                = 0xE0001048;
+__constant U32 _DWT_COMP3_ADDR                = 0xE0001050;
+__constant U32 _DWT_MASK3_ADDR                = 0xE0001054;
+__constant U32 _DWT_FUNC3_ADDR                = 0xE0001058;
+__constant U32 _FPCR0_ADDR                    = 0xE0002008;
+__constant U32 _FPCR1_ADDR                    = 0xE000200C;
+__constant U32 _FPCR2_ADDR                    = 0xE0002010;
+__constant U32 _FPCR3_ADDR                    = 0xE0002014;
+__constant U32 _FPCR4_ADDR                    = 0xE0002018;
+__constant U32 _FPCR5_ADDR                    = 0xE000201C;
+
+
+/*********************************************************************
+*
+*       Static variables
+*
+**********************************************************************
+*/
+
+/*********************************************************************
+*
+*       Local functions
+*
+**********************************************************************
+*/
+
+/*********************************************************************
+*
+*       _ConfigJTAGChainDefault
+*/
+static void _ConfigJTAGChainDefault(void) {
+  //
+  // Default JTAG chain after TAP reset / power on:
+  // TDI -> #0 TAPC (IRLen = 5) -> TDO
+  //
+  // Important: PerformTIFInit == 0 as this would cause a TAP reset which kicks the core out of the JTAG chain
+  //
+  JLINK_CORESIGHT_Configure("IRPre=0;DRPre=0;IRPost=0;DRPost=0;IRLenDevice=5;PerformTIFInit=0");
+}
+
+/*********************************************************************
+*
+*       _ConfigJTAGChainCore
+*/
+static void _ConfigJTAGChainCore(void) {
+  //
+  // TDI -> #1 TAPC (IRLen = 5) -> #0 DAP (IRLen = 4) -> TDO
+  //
+  // Important: PerformTIFInit == 0 as this would cause a TAP reset which kicks the core out of the JTAG chain
+  //
+  JLINK_CORESIGHT_Configure("IRPre=0;DRPre=0;IRPost=5;DRPost=1;IRLenDevice=4;PerformTIFInit=0");
+}
+
+/*********************************************************************
+*
+*       _SelectAHB32
+*
+*  Function description
+*    Writes a 32-bit item via the selected AHB-AP
+*
+*  Notes
+*    (1) Relies on DAP already prepared, so powered up etc. via generic part of SW or _PrepDAP() being called in advance
+*/
+static void _WriteAHB32(U32 Addr, U32 Data) {
+  JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_ADDR, Addr);
+  JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_DATA, Data);
+}
+
+/*********************************************************************
+*
+*       _SelectAHB32
+*
+*  Function description
+*    Selects the AHB-AP that is connected to the CPU core and configures it for 32-bit accesses
+*
+*  Notes
+*    (1) Relies on DAP already prepared, so powered up etc. via generic part of SW or _PrepDAP() being called in advance
+*/
+static void _SelectAHB32(void) {
+  JLINK_CORESIGHT_WriteDP(JLINK_CORESIGHT_DP_REG_SELECT, (0 << 4) | (0 << 24));       // Select AHB-AP bank 0
+  JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_CTRL,   _DAP_ACC_32BIT_NO_AUTO_INC);
+}
+
+/*********************************************************************
+*
+*       _PrepDAP
+*
+*  Function description
+*    Prepares the DAP for further usage, meaning enabling the power for different domains, make sure that no sticky error flags are set etc.
+*/
+static void _PrepDAP(void) {
+  U32 v;
+  //
+  // The DP is slightly different for JTAG and SWD, especially regarding clearing sticky error bits
+  //
+  if (JLINK_ActiveTIF == JLINK_TIF_SWD) {
+    v = _DP_CTRL_STAT_BIT_DBGPWRUPREQ | _DP_CTRL_STAT_BIT_SYSPWRUPREQ;
+    JLINK_CORESIGHT_WriteDP(JLINK_CORESIGHT_DP_REG_ABORT, 0x1E);                          // Clear sticky error flags
+  } else {
+    v = _DP_CTRL_STAT_BIT_DBGPWRUPREQ | _DP_CTRL_STAT_BIT_SYSPWRUPREQ | _DP_CTRL_STAT_BIT_STICKYERR;   // Clear sticky error flag
+  }
+  JLINK_CORESIGHT_WriteDP(JLINK_CORESIGHT_DP_REG_CTRL_STAT, v);
+}
+
+/*********************************************************************
+*
+*       _InitTargetSWD
+*/
+static int _InitTargetSWD(void) {
+// TBD: Send 128-bit security key via SWD... There is no documentation from ADI yet how to do it
+  JLINK_CORESIGHT_Configure("");
+  return 0;
+}
+
+/*********************************************************************
+*
+*       _InitTargetJTAG
+*/
+static int _InitTargetJTAG(void) {
+  U32 TAPCIdCode;
+  U32 DPIdCode;
+  U32 v;
+  int BitPos;
+  int SiliconRevision;
+
+  JTAG_Reset();                                                                     // Perform TAP reset and J-Link JTAG auto-detection
+  _ConfigJTAGChainDefault();
+  //
+  // Bring device into responsive state
+  //
+  JTAG_WriteIR(_INST_TAPC_IDCODE);
+  BitPos = JTAG_WriteDR(0x00000000, 32);
+  TAPCIdCode = JTAG_GetU32(BitPos);
+  v = TAPCIdCode & 0x0FFF0FFF;
+  if (v != _IDCODE_TAPC) {
+    JLINK_SYS_Report("Device seems to be confused... performing recovery sequence.");
+    JTAG_TRSTPin  = 0;
+    JTAG_ResetPin = 0;
+    SYS_Sleep(50);
+    JTAG_TRSTPin  = 1;
+    JTAG_ResetPin = 1;
+    SYS_Sleep(350);     // Seems the CM40F needs a long delay after recovery sequence... otherwise chip does not respond properly
+    JTAG_Reset();       // Perform TAP reset and J-Link JTAG auto-detection
+  }
+  //
+  // Early out if device is unresponsive
+  //
+  JTAG_WriteIR(_INST_TAPC_IDCODE);
+  BitPos = JTAG_WriteDR(0x00000000, 32);
+  TAPCIdCode = JTAG_GetU32(BitPos);
+  v = TAPCIdCode & 0x0FFF0FFF;
+  if (v != _IDCODE_TAPC) {
+    JLINK_SYS_Report1("Cannot find TAPC. Power-cycle required?. Found ", v);
+    return -1;
+  }
+  //
+  // Current silicon revisions need a 128-bit unlock key being sent on the debug interface
+  //
+  SiliconRevision = (TAPCIdCode >> 28) & 0xF;
+  if (SiliconRevision >= 2) {
+    JLINK_SYS_Report("CM408x (InitTarget): Sending security key needed for CPU core access");
+    JTAG_WriteIR(_INST_TAPC_SDBKEY);
+    JTAG_StartDR();
+    JTAG_WriteDRCont(_KEY128_SDBKEY0, 32);
+    JTAG_WriteDRCont(_KEY128_SDBKEY1, 32);
+    JTAG_WriteDRCont(_KEY128_SDBKEY2, 32);
+    JTAG_WriteDREnd(_KEY128_SDBKEY3, 32);   // Shift 32-bits data SDBKEY 3, also leaves Shift-DR after shifting the last bit and remains in Update-DR
+    JTAG_WriteClocks(1);               // Make sure that we go through Idle state in TAP controller
+  }
+  //
+  // Add core to JTAG chain:
+  //
+  Report("Enabling core access");
+  JTAG_WriteIR(_INST_TAPC_JTAGCTL);
+  JTAG_WriteDR(1, 8);              // [0:0]: Enable: 1 == Enable access to CPU core
+  JTAG_WriteClocks(10);
+  _ConfigJTAGChainCore();
+  //
+  // Check DAP Id
+  //
+  JTAG_WriteIR(_INST_DAP_IDCODE);
+  BitPos = JTAG_WriteDR(0x00000000, 32);
+  DPIdCode = JTAG_GetU32(BitPos);
+  v = DPIdCode & 0x0F000FFF;
+  if (v != _IDCODE_DAP) {
+    JLINK_SYS_Report1("CM408x (InitTarget): Cannot find Cortex-M4 DAP. IDCODE mismatch, found: ", v);
+    return -1;
+  }
+  //
+  // We disabled the JTAG auto-detection of the DLL
+  // Therefore, we need to manually specify the JTAG TAP Ids
+  //
+  JTAG_SetDeviceId(0, DPIdCode);
+  JTAG_SetDeviceId(1, TAPCIdCode);
+  return 0;
+}
+
+/*********************************************************************
+*
+*       _TargetHalt
+*
+*  Function description
+*    This function halts the targets and waits until it is halted
+*/
+static int _TargetHalt(void) {
+  int v;
+  int t;
+  int DHCSRVal;
+  int Result;
+  //
+  // Halt CPU by setting C_DEBUGEN and C_HALT in DHCSR
+  // Special case if GoIntDis has been performed before:
+  // There are some CPUs (so far we have only seen this on the Realtek RTL8762)
+  // on which the change of the C_MASKINTS bit gets effective before the C_HALT, so that the CPU may take a pending ISR before actually halting
+  // For such cases, we make sure that the C_MASKINTS is only cleared after the CPU has already been halted
+  //
+  Result = 0;
+  DHCSRVal = 0xA05F0003;
+  JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_ADDR, _DHCSR_ADDR);
+  JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_DATA, DHCSRVal);
+  //
+  // Wait until CPU is halted or timeout occured
+  //
+  t = JLINK_GetTime() + 200;
+  do {
+    v = JLINK_CORESIGHT_ReadAP(JLINK_CORESIGHT_AP_REG_DATA);
+    v = ((v >> 17) & 1);                     // Check if CPU is halted: S_Halt (Bit 17).
+    if (v) {
+      break;
+    }
+    v = (t - JLINK_GetTime());
+    if (v < 0) {
+      Result = -1;
+      break;
+    }
+  } while (1); 
+  return Result;
+}
+
+/*********************************************************************
+*
+*       Global functions
+*
+**********************************************************************
+*/
+
+/*********************************************************************
+*
+*       GetScriptVersion
+*
+*  Description
+*    This function can be used to pass the script file version to the
+*    J-Link DLL. This allows SEGGER to implement different DLL behavior for
+*    different script file versions.
+*    
+*    MinorVersion * 100
+*    + SubVersion *   1
+*
+*  Example: 100 --> v1.00
+*           101 --> v1.01
+*           151 --> v1.51
+*           200 --> v2.00
+*   
+*/
+int GetScriptVersion(void) {
+  //
+  // First script shipped with IAR EWARM did not allow using SWD
+  // Therefore, the DLL ignores all InitTarget() functions from the script files that report version < 1.00
+  // This way, the old IAR scripts are de facto disabled
+  //
+  return 100;
+}
+
+/*********************************************************************
+*                                                                     
+*       ConfigTargetSettings   
+*
+*  Function description
+*    Called before InitTarget(). Mainly used to set some global DLL variables to customize/predefine the connect procedure,
+*    like setting up a fixed CoreSight ROM table etc.
+*
+*  Notes
+*    (1) May not, under absolutely NO circumstances, call any API functions that perform target communication.
+*    (2) Should only set some global DLL variables
+*
+*  Return value
+*    >= 0  O.K.
+*     < 0  Error
+*/          
+int ConfigTargetSettings(void) {
+  //
+  // Device has a broken ROM table so Coresight modules can not be identified by the DLL
+  // That is why they are added through exec commands below
+  //
+  JLINK_SYS_Report("ConfigTargetSettings()");
+  CPU                = CORTEX_M4;
+  JTAG_AllowTAPReset = 0;    // TAP resets kick the M4 out of the JTAG chain. Therefore forbid them
+  return 0;
+}
+
+/*********************************************************************
+*
+*       ResetTarget
+*
+*  Function description
+*    Called *instead* of target reset sequence in J-Link DLL
+*
+*  Return value
+*    >= 0  O.K.
+*     < 1  Error
+*
+*  Notes
+*    (1) May use high-level API functions
+*/
+int ResetTarget(void) {
+  U32 DWTComp0;
+  U32 DWTMask0;
+  U32 DWTFunc0;
+  U32 DWTComp1;
+  U32 DWTMask1;
+  U32 DWTFunc1;
+  U32 DWTComp2;
+  U32 DWTMask2;
+  U32 DWTFunc2;
+  U32 DWTComp3;
+  U32 DWTMask3;
+  U32 DWTFunc3;
+  U32 FPCR0;
+  U32 FPCR1;
+  U32 FPCR2;
+  U32 FPCR3;
+  U32 FPCR4;
+  U32 FPCR5;
+  U32 SiliconRevision;
+  U32 SavedDEMCR;
+  U32 SavedFPCTRL;
+  U32 SavedDWTCTRL;
+  U32 ResetVector;
+  U32 v;
+  int r;
+  //
+  // Different revisions of the Analog Devices "Slater" (CM40x) devices require different special handling:
+  // 1) 1st and 2nd silicon revision have a bad reset behavior that also clears the debug logic when performing a reset
+  // 2) 3rd silicon and later have a "fixed" reset that does no longer reset the debug logic
+  //    but makes the workaround we perform for the 1st and 2nd silicon, crashing!!!!
+  //
+  // Silicon revision can be taken from lowest nibble of undocumented EMUID0 Chip Identification register
+  //
+  // Procedure:
+  //   Halt CPU
+  //   Determine silicon rev
+  //   Issue reset with core set to "non-full boot"
+  //   Set BP on reset handler
+  //   Issue core-only reset
+  //   Restore settings
+  JLINK_SYS_Report("ResetTarget()");
+  _SelectAHB32();
+  r = _TargetHalt();
+  if (r) {
+    JLINK_SYS_Report("Could not halt core before reset");
+    return -1;
+  }
+  //
+  // Determine silicon revision
+  //
+  SiliconRevision = 0;
+  SiliconRevision = JLINK_MEM_ReadU32(0x40002024);
+  if (SiliconRevision == 0xFFFFFFFF) {                                // Some early samples do not have this register...
+    SiliconRevision = 0;
+  }
+  SiliconRevision &= 0xF;
+  //
+  // Remember instruction and data breakpoint settings (as both may be cleared after reset on older silicon revision) and we also need HW-BP unit 0 during the reset
+  // Remember DEMCR as we are going to touch this register as well
+  //
+  SavedDEMCR   = JLINK_MEM_ReadU32(_DEMCR_ADDR);
+  SavedFPCTRL  = JLINK_MEM_ReadU32(_FP_CTRL_ADDR);
+  if ((SavedDEMCR >> 24) & 1) {                                             // TRACENA == 1 => DWT unit enabled
+    SavedDWTCTRL = JLINK_MEM_ReadU32(_DWT_CTRL);
+    DWTComp0 = JLINK_MEM_ReadU32(_DWT_COMP0_ADDR);  // DWT_COMP0
+    DWTMask0 = JLINK_MEM_ReadU32(_DWT_MASK0_ADDR);  // DWT_COMP0
+    DWTFunc0 = JLINK_MEM_ReadU32(_DWT_FUNC0_ADDR);  // DWT_COMP0
+    DWTComp1 = JLINK_MEM_ReadU32(_DWT_COMP1_ADDR);  // DWT_COMP0
+    DWTMask1 = JLINK_MEM_ReadU32(_DWT_MASK1_ADDR);  // DWT_COMP0
+    DWTFunc1 = JLINK_MEM_ReadU32(_DWT_FUNC1_ADDR);  // DWT_COMP0
+    DWTComp2 = JLINK_MEM_ReadU32(_DWT_COMP2_ADDR);  // DWT_COMP0
+    DWTMask2 = JLINK_MEM_ReadU32(_DWT_MASK2_ADDR);  // DWT_COMP0
+    DWTFunc2 = JLINK_MEM_ReadU32(_DWT_FUNC2_ADDR);  // DWT_COMP0
+    DWTComp3 = JLINK_MEM_ReadU32(_DWT_COMP3_ADDR);  // DWT_COMP0
+    DWTMask3 = JLINK_MEM_ReadU32(_DWT_MASK3_ADDR);  // DWT_COMP0
+    DWTFunc3 = JLINK_MEM_ReadU32(_DWT_FUNC3_ADDR);  // DWT_COMP0
+  }
+  FPCR0 = JLINK_MEM_ReadU32(_FPCR0_ADDR);
+  FPCR1 = JLINK_MEM_ReadU32(_FPCR1_ADDR);
+  FPCR2 = JLINK_MEM_ReadU32(_FPCR2_ADDR);
+  FPCR3 = JLINK_MEM_ReadU32(_FPCR3_ADDR);
+  FPCR4 = JLINK_MEM_ReadU32(_FPCR4_ADDR);
+  FPCR5 = JLINK_MEM_ReadU32(_FPCR5_ADDR);
+  //
+  // Read reset vector of application. Needs to be done before reset, as reset clears SPIFI init
+  // and boot ROM needs to re-initialize it, before we can read it again, after reset...
+  //
+  ResetVector = 0x18C00000;
+  if (SiliconRevision >= 2) {
+    //
+    // Since the 3rd silicon revision, there is a header in QSPI flash, so the reset handler address cannot be extracted from <QSPIAddr> + 0x4 anymore
+    // Header:
+    //   Word0-7 = Security keys etc.
+    //   Word8   = Reset vector addr. (If == 0xFFFFFFFF => Defaults to 0x18C00000)
+    //
+    v = JLINK_MEM_ReadU32(0x1800001C);
+    if (v != 0xFFFFFFFF) {
+      ResetVector = v;
+    }
+  }
+  ResetVector = JLINK_MEM_ReadU32(ResetVector + 4);
+  ResetVector &= 0xFFFFFFFE;                                                    // Eliminate thumb bit
+  JLINK_SYS_Report1("Reset handler: ", ResetVector);
+  //
+  // Older devices had a bug that resets also reset the debug logic of the device
+  //
+  if (SiliconRevision < 2) {
+    JLINK_SYS_Report("Old silicon with reset bug");
+    _PrepDAP();
+    _SelectAHB32();
+    JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_ADDR, 0x4001400C);
+    JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_DATA, 0x677);                               // Configure device to not perform full boot
+    JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_ADDR, _AIRCR_ADDR);
+    JLINK_CORESIGHT_WriteAP(JLINK_CORESIGHT_AP_REG_DATA, 0x05FA0004);                          // Trigger system reset via AIRCR.SYSRESETREQ
+    JLINK_CORESIGHT_ReadAP(JLINK_CORESIGHT_AP_REG_DATA);                                       // Make sure that DAP does not buffer last AP access
+    SYS_Sleep(200);
+    if (MAIN_ActiveTIF == JLINK_TIF_SWD) {
+      _InitTargetSWD();
+    }
+    _PrepDAP();
+    _SelectAHB32();
+    _WriteAHB32(_DHCSR_ADDR, 0xA05F0001);                                         // Set DEBUGEN to enable debug functionality of the core.
+    _WriteAHB32(_DEMCR_ADDR, 1 << 24);                                            // Enable DWT units
+    _WriteAHB32(0x4001400C, 0);                                                   // Configure device to perform full boot
+    _WriteAHB32(_FP_CTRL_ADDR, 3);                                                // Make sure that flash patch unit is enabled
+    v = (1 << 0) | ResetVector | (1 << 30);                                       // BP on <ResetVector>, lower halfword
+    _WriteAHB32(_FPCR_ADDR, v);                                                   // Perform core-only reset via AIRCR.VECTRESET
+    _WriteAHB32(_AIRCR_ADDR, 0x05FA0001);                                         // Perform core-only reset via AIRCR.VECTRESET
+  } else {
+    _WriteAHB32(_FP_CTRL_ADDR, 3);                                                // Make sure that flash patch unit is enabled
+    v = (1 << 0) | ResetVector | (1 << 30);                                       // BP on <ResetVector>, lower halfword
+    _WriteAHB32(_FPCR_ADDR, v);                                                   // Perform core-only reset via AIRCR.VECTRESET
+    _WriteAHB32(_AIRCR_ADDR, 0x05FA0004);                                         // Trigger system reset via AIRCR.SYSRESETREQ
+    JLINK_CORESIGHT_ReadAP(JLINK_CORESIGHT_AP_REG_DATA);                          // Make sure that DAP does not buffer last AP access
+  }
+  SYS_Sleep(200);                                                                 // Wait some time to make sure reset has taken place and give boot ROM a chance to perform its startup stuff.
+  _PrepDAP();
+  _SelectAHB32();
+  r = _TargetHalt();
+  if (r < 0) {
+    JLINK_SYS_Report("Failed to halt core after reset");
+    return -1;
+  }
+  //
+  // Restore debug registers if they have been cleared by reset
+  //
+  JLINK_MEM_WriteU32(_DEMCR_ADDR, SavedDEMCR);
+  if ((SavedDEMCR >> 24) & 1) {                                             // TRACENA set? => DWT unit enabled
+    JLINK_MEM_WriteU32(_DWT_CTRL, SavedDWTCTRL);
+  }
+  JLINK_MEM_WriteU32(_FP_CTRL_ADDR, SavedFPCTRL);
+  if ((SavedDEMCR >> 24) & 1) {                                             // TRACENA set? => DWT unit enabled
+    JLINK_MEM_WriteU32(_DWT_COMP0_ADDR, DWTComp0);
+    JLINK_MEM_WriteU32(_DWT_MASK0_ADDR, DWTMask0);
+    JLINK_MEM_WriteU32(_DWT_FUNC0_ADDR, DWTFunc0);
+    JLINK_MEM_WriteU32(_DWT_COMP1_ADDR, DWTComp1);
+    JLINK_MEM_WriteU32(_DWT_MASK1_ADDR, DWTMask1);
+    JLINK_MEM_WriteU32(_DWT_FUNC1_ADDR, DWTFunc1);
+    JLINK_MEM_WriteU32(_DWT_COMP2_ADDR, DWTComp2);
+    JLINK_MEM_WriteU32(_DWT_MASK2_ADDR, DWTMask2);
+    JLINK_MEM_WriteU32(_DWT_FUNC2_ADDR, DWTFunc2);
+    JLINK_MEM_WriteU32(_DWT_COMP3_ADDR, DWTComp3);
+    JLINK_MEM_WriteU32(_DWT_MASK3_ADDR, DWTMask3);
+    JLINK_MEM_WriteU32(_DWT_FUNC3_ADDR, DWTFunc3);
+  }
+  JLINK_MEM_WriteU32(_FPCR0_ADDR, FPCR0);
+  JLINK_MEM_WriteU32(_FPCR1_ADDR, FPCR1);
+  JLINK_MEM_WriteU32(_FPCR2_ADDR, FPCR2);
+  JLINK_MEM_WriteU32(_FPCR3_ADDR, FPCR3);
+  JLINK_MEM_WriteU32(_FPCR4_ADDR, FPCR4);
+  JLINK_MEM_WriteU32(_FPCR5_ADDR, FPCR5);
+  return 0;
+}
+
+/*********************************************************************
+*
+*       InitTarget
+*
+*  Function description
+*    Called *before* generic and core specific DLL target connection init sequence
+*
+*  Return value
+*    >= 0  O.K.
+*     < 1  Error
+*
+*  Notes
+*    (1) Must not (under absolutely NO circumstances) use any high-level API functions
+*/
+int InitTarget(void) {
+  int r;
+  //
+  // Perform target interface specific connect sequence
+  //
+  JLINK_SYS_Report("InitTarget()");
+  if (MAIN_ActiveTIF == JLINK_TIF_JTAG) {
+    r = _InitTargetJTAG();
+  } else {
+    r = _InitTargetSWD();
+  }
+  return r;
+}
